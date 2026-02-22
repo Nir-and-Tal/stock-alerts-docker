@@ -1,0 +1,131 @@
+name: Build and Publish Base Image
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+
+  build-and-scan:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        run: echo "version=$(cat VERSION | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: tal101d56/stock-alert-bot-base:${{ steps.version.outputs.version }}
+
+      - name: Validate image - Python available
+        run: docker run --rm tal101d56/stock-alert-bot-base:${{ steps.version.outputs.version }} python --version
+
+      - name: Validate image - procps installed
+        run: docker run --rm tal101d56/stock-alert-bot-base:${{ steps.version.outputs.version }} pgrep --help > /dev/null 2>&1
+
+      - name: Validate image - workdir is /app
+        run: |
+          workdir=$(docker run --rm tal101d56/stock-alert-bot-base:${{ steps.version.outputs.version }} pwd)
+          if [ "$workdir" != "/app" ]; then
+            echo "ERROR: WORKDIR is '$workdir', expected '/app'"
+            exit 1
+          fi
+
+      - name: Run Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: tal101d56/stock-alert-bot-base:${{ steps.version.outputs.version }}
+          format: table
+          exit-code: 1
+          severity: CRITICAL,HIGH
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: build-and-scan
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read current version
+        id: current
+        run: echo "version=$(cat VERSION | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Increment patch version
+        id: next
+        run: |
+          current="${{ steps.current.outputs.version }}"
+          IFS='.' read -r major minor patch <<< "$current"
+          next_patch=$((patch + 1))
+          next_version="${major}.${minor}.${next_patch}"
+          echo "version=${next_version}" >> "$GITHUB_OUTPUT"
+          echo "Bumping version: ${current} -> ${next_version}"
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            tal101d56/stock-alert-bot-base:${{ steps.next.outputs.version }}
+            tal101d56/stock-alert-bot-base:latest
+
+      - name: Update VERSION file
+        run: |
+          echo "${{ steps.next.outputs.version }}" > VERSION
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add VERSION
+          git commit -m "Bump version to ${{ steps.next.outputs.version }}"
+          git push
+
+      - name: Summary
+        run: |
+          echo "## Published Base Image" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**New tag:** \`tal101d56/stock-alert-bot-base:${{ steps.next.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Previous version:** \`${{ steps.current.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+  auto-merge:
+    runs-on: ubuntu-latest
+    needs: build-and-scan
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Enable auto-merge
+        run: gh pr merge ${{ github.event.pull_request.number }} --auto --squash --repo ${{ github.repository }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
