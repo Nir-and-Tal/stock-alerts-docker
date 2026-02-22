@@ -14,7 +14,7 @@ Provides the Python runtime and system dependencies. The application repo layers
 ## Image
 
 ```
-docker pull tal101d56/stock-alert-bot:<version>
+docker pull tal101d56/stock-alert-bot-base:<version>
 ```
 
 ## Versioning
@@ -32,7 +32,7 @@ PRs are auto-merged when the pipeline passes.
 ## Usage in the app repo
 
 ```dockerfile
-FROM tal101d56/stock-alert-bot:1.0.1
+FROM tal101d56/stock-alert-bot-base:1.0.1
 
 COPY requirements.txt .
 RUN pip install --user --no-cache-dir -r requirements.txt
